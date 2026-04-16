@@ -1,0 +1,114 @@
+package handlers
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+
+	"strings"
+
+	"lib-store-explorer/internal/config"
+	"lib-store-explorer/internal/generated"
+	"lib-store-explorer/internal/utils"
+
+	"github.com/gin-gonic/gin"
+)
+
+type GeneratedFileHandler struct {
+	config *config.Config
+}
+
+func NewGeneratedFileHandler(cfg *config.Config) *GeneratedFileHandler {
+	return &GeneratedFileHandler{
+		config: cfg,
+	}
+}
+
+func (h *GeneratedFileHandler) ListLibraries(c *gin.Context) {
+	indexPath := filepath.Join(h.config.RootDir, "library.yaml")
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		errorMsg := err.Error()
+		c.JSON(http.StatusInternalServerError, generated.ErrorResponse{
+			Error:   "index_error",
+			Message: "Failed to read library index",
+			Details: &map[string]interface{}{"error": errorMsg},
+		})
+		return
+	}
+	c.Data(http.StatusOK, "application/yaml", data)
+}
+
+func (h *GeneratedFileHandler) DownloadLibraryVersion(c *gin.Context, name string, version string) {
+	index, err := utils.LoadLibraryIndex(h.config.RootDir)
+	if err != nil {
+		errorMsg := err.Error()
+		c.JSON(http.StatusInternalServerError, generated.ErrorResponse{
+			Error:   "index_error",
+			Message: "Failed to load library index",
+			Details: &map[string]interface{}{"error": errorMsg},
+		})
+		return
+	}
+
+	versions, ok := index[name]
+	if !ok {
+		c.JSON(http.StatusNotFound, generated.ErrorResponse{
+			Error:   "not_found",
+			Message: fmt.Sprintf("Library '%s' not found", name),
+		})
+		return
+	}
+
+	entry, ok := versions[version]
+	if !ok {
+		c.JSON(http.StatusNotFound, generated.ErrorResponse{
+			Error:   "not_found",
+			Message: fmt.Sprintf("Version '%s' of library '%s' not found", version, name),
+		})
+		return
+	}
+
+	fullPath, err := utils.SafeJoin(h.config.RootDir, entry.Filename)
+	if err != nil {
+		errorMsg := err.Error()
+		c.JSON(http.StatusBadRequest, generated.ErrorResponse{
+			Error:   "invalid_path",
+			Message: "Invalid file path in library index",
+			Details: &map[string]interface{}{"error": errorMsg},
+		})
+		return
+	}
+
+	if _, err := os.Stat(fullPath); err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, generated.ErrorResponse{
+				Error:   "file_not_found",
+				Message: fmt.Sprintf("Library file '%s' does not exist on disk", entry.Filename),
+			})
+			return
+		}
+		errorMsg := err.Error()
+		c.JSON(http.StatusInternalServerError, generated.ErrorResponse{
+			Error:   "stat_error",
+			Message: "Failed to access library file",
+			Details: &map[string]interface{}{"error": errorMsg},
+		})
+		return
+	}
+
+	filename := filepath.Base(entry.Filename)
+	contentType := "application/octet-stream"
+	if strings.HasSuffix(filename, ".zip") {
+		contentType = "application/zip"
+	} else if strings.HasSuffix(filename, ".tar.gz") || strings.HasSuffix(filename, ".tgz") {
+		contentType = "application/gzip"
+	}
+
+	c.Header("Content-Description", "File Transfer")
+	c.Header("Content-Transfer-Encoding", "binary")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Header("Content-Type", contentType)
+	c.File(fullPath)
+}
