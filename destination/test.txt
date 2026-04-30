@@ -1,425 +1,80 @@
-package utils
-
-import (
-	"archive/zip"
-	"encoding/base64"
-	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-
-	"lib-store-explorer/internal/models"
-	"gopkg.in/yaml.v3"
-)
-
-func FormatFileSize(bytes int64) string {
-	if bytes == 0 {
-		return "0 B"
-	}
-	
-	units := []string{"B", "KB", "MB", "GB", "TB"}
-	i := 0
-	size := float64(bytes)
-	
-	for size >= 1024 && i < len(units)-1 {
-		size /= 1024
-		i++
-	}
-	
-	return fmt.Sprintf("%.2f %s", size, units[i])
-}
-
-func GetFileExtension(filename string) string {
-	ext := filepath.Ext(filename)
-	if ext != "" && len(ext) > 1 {
-		return ext[1:]
-	}
-	return ""
-}
-
-func GetFileType(filename string, isDirectory bool) models.FileType {
-	if isDirectory {
-		return models.FileTypeFolder
-	}
-	
-	ext := strings.ToLower(GetFileExtension(filename))
-	
-	fileTypes := map[string]models.FileType{
-		"jpg": models.FileTypeImage, "jpeg": models.FileTypeImage,
-		"png": models.FileTypeImage, "gif": models.FileTypeImage,
-		"svg": models.FileTypeImage, "webp": models.FileTypeImage,
-		"bmp": models.FileTypeImage, "ico": models.FileTypeImage,
-		
-		"pdf": models.FileTypePDF,
-		"doc": models.FileTypeDocument, "docx": models.FileTypeDocument,
-		"txt": models.FileTypeText, "md": models.FileTypeText,
-		
-		"js": models.FileTypeCode, "ts": models.FileTypeCode,
-		"jsx": models.FileTypeCode, "tsx": models.FileTypeCode,
-		"html": models.FileTypeCode, "css": models.FileTypeCode,
-		"json": models.FileTypeCode, "xml": models.FileTypeCode,
-		"py": models.FileTypeCode, "java": models.FileTypeCode,
-		"c": models.FileTypeCode, "cpp": models.FileTypeCode,
-		"h": models.FileTypeCode, "hpp": models.FileTypeCode,
-		"cs": models.FileTypeCode, "php": models.FileTypeCode,
-		"rb": models.FileTypeCode, "go": models.FileTypeCode,
-		"rs": models.FileTypeCode, "swift": models.FileTypeCode,
-		"kt": models.FileTypeCode, "scala": models.FileTypeCode,
-		"sh": models.FileTypeCode, "bash": models.FileTypeCode,
-		"sql": models.FileTypeCode, "yml": models.FileTypeCode,
-		"yaml": models.FileTypeCode, "toml": models.FileTypeCode,
-		"ini": models.FileTypeCode, "cfg": models.FileTypeCode,
-		"conf": models.FileTypeCode, "vue": models.FileTypeCode,
-		"svelte": models.FileTypeCode, "astro": models.FileTypeCode,
-		
-		"zip": models.FileTypeArchive, "rar": models.FileTypeArchive,
-		"tar": models.FileTypeArchive, "gz": models.FileTypeArchive,
-		"7z": models.FileTypeArchive, "bz2": models.FileTypeArchive,
-		
-		"mp3": models.FileTypeAudio, "wav": models.FileTypeAudio,
-		"ogg": models.FileTypeAudio, "flac": models.FileTypeAudio,
-		"mp4": models.FileTypeVideo, "avi": models.FileTypeVideo,
-		"mkv": models.FileTypeVideo, "mov": models.FileTypeVideo,
-		"webm": models.FileTypeVideo,
-		
-		"csv": models.FileTypeData, "xls": models.FileTypeData,
-		"xlsx": models.FileTypeData,
-	}
-	
-	if fileType, ok := fileTypes[ext]; ok {
-		return fileType
-	}
-	
-	return models.FileTypeFile
-}
-
-func IsTextFile(filename string) bool {
-	ext := strings.ToLower(GetFileExtension(filename))
-	
-	textExtensions := []string{
-		"txt", "md", "js", "ts", "jsx", "tsx", "html", "css", "json",
-		"xml", "py", "java", "c", "cpp", "h", "hpp", "cs", "php", "rb",
-		"go", "rs", "swift", "kt", "scala", "sh", "bash", "sql", "yml",
-		"yaml", "toml", "ini", "cfg", "conf", "log", "csv", "env", "gitignore",
-		"dockerfile", "vue", "svelte", "astro", "prisma", "mod", "sum",
-	}
-	
-	for _, textExt := range textExtensions {
-		if ext == textExt {
-			return true
-		}
-	}
-	
-	return ext == ""
-}
-
-func IsImageFile(filename string) bool {
-	ext := strings.ToLower(GetFileExtension(filename))
-	
-	imageExtensions := []string{
-		"jpg", "jpeg", "png", "gif", "svg", "webp", "bmp", "ico",
-	}
-	
-	for _, imgExt := range imageExtensions {
-		if ext == imgExt {
-			return true
-		}
-	}
-	
-	return false
-}
-
-func GetDirectoryContents(dirPath string) ([]models.FileItem, error) {
-	entries, err := os.ReadDir(dirPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read directory: %w", err)
-	}
-	
-	items := make([]models.FileItem, 0, len(entries))
-	
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-		
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		
-		item := models.FileItem{
-			Name:          entry.Name(),
-			IsDirectory:   entry.IsDir(),
-			Size:          info.Size(),
-			SizeFormatted: FormatFileSize(info.Size()),
-			Modified:      info.ModTime(),
-			Type:          GetFileType(entry.Name(), entry.IsDir()),
-		}
-		
-		if !entry.IsDir() {
-			item.Extension = GetFileExtension(entry.Name())
-		}
-		
-		items = append(items, item)
-	}
-	
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].IsDirectory != items[j].IsDirectory {
-			return items[i].IsDirectory
-		}
-		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
-	})
-	
-	return items, nil
-}
-
-func ReadFileContent(filePath string, maxSize int64) (*models.FileContentResponse, error) {
-	info, err := os.Stat(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat file: %w", err)
-	}
-	
-	response := &models.FileContentResponse{
-		Size:          info.Size(),
-		SizeFormatted: FormatFileSize(info.Size()),
-		Extension:     GetFileExtension(filepath.Base(filePath)),
-	}
-	
-	if info.Size() > maxSize {
-		response.Type = "binary"
-		return response, fmt.Errorf("file too large (%s). Maximum size: %s", 
-			FormatFileSize(info.Size()), FormatFileSize(maxSize))
-	}
-	
-	filename := filepath.Base(filePath)
-	
-	if IsImageFile(filename) {
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read image file: %w", err)
-		}
-		
-		ext := GetFileExtension(filename)
-		mimeType := fmt.Sprintf("image/%s", ext)
-		if ext == "svg" {
-			mimeType = "image/svg+xml"
-		}
-		
-		response.Type = "image"
-		response.Content = fmt.Sprintf("data:%s;base64,%s", 
-			mimeType, base64.StdEncoding.EncodeToString(data))
-		response.MimeType = mimeType
-		
-		return response, nil
-	}
-	
-	if IsTextFile(filename) {
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read text file: %w", err)
-		}
-		
-		response.Type = "text"
-		response.Content = string(data)
-		
-		return response, nil
-	}
-	
-	response.Type = "binary"
-	return response, nil
-}
-
-func CreateBreadcrumbs(currentPath, rootPath string) []models.Breadcrumb {
-	relPath, err := filepath.Rel(rootPath, currentPath)
-	if err != nil || relPath == "." {
-		return []models.Breadcrumb{
-			{Name: "Root", Path: "/", IsLast: true},
-		}
-	}
-	
-	parts := strings.Split(relPath, string(filepath.Separator))
-	breadcrumbs := make([]models.Breadcrumb, 0, len(parts)+1)
-	
-	breadcrumbs = append(breadcrumbs, models.Breadcrumb{
-		Name:   "Root",
-		Path:   "/",
-		IsLast: len(parts) == 0,
-	})
-	
-	accumulated := "/"
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-		accumulated = filepath.Join(accumulated, part)
-		breadcrumbs = append(breadcrumbs, models.Breadcrumb{
-			Name:   part,
-			Path:   accumulated,
-			IsLast: i == len(parts)-1,
-		})
-	}
-	
-	return breadcrumbs
-}
-
-func ValidateAndCleanPath(userPath string) (string, error) {
-	if userPath == "" {
-		return "", fmt.Errorf("path cannot be empty")
-	}
-
-	if userPath == "/" || userPath == "." {
-		return "/", nil
-	}
-
-	if strings.Contains(userPath, "..") {
-		return "", fmt.Errorf("path traversal patterns (..) are not allowed")
-	}
-
-	if filepath.IsAbs(userPath) {
-		return "", fmt.Errorf("absolute paths are not allowed")
-	}
-
-	if len(userPath) >= 3 && userPath[1] == ':' && (userPath[2] == '\\' || userPath[2] == '/') {
-		return "", fmt.Errorf("absolute paths are not allowed")
-	}
-
-	cleaned := filepath.Clean(userPath)
-
-	if strings.Contains(cleaned, "..") {
-		return "", fmt.Errorf("invalid path after normalization")
-	}
-
-	return cleaned, nil
-}
-
-func SafeJoin(root, userPath string) (string, error) {
-	cleaned := filepath.Clean(userPath)
-
-	joined := filepath.Join(root, cleaned)
-
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-
-	absJoined, err := filepath.Abs(joined)
-	if err != nil {
-		return "", err
-	}
-
-	if !strings.HasPrefix(absJoined, absRoot) {
-		return "", fmt.Errorf("path traversal attempt detected")
-	}
-
-	return absJoined, nil
-}
-
-func ZipFiles(writer io.Writer, rootDir string, files []string) error {
-	zipWriter := zip.NewWriter(writer)
-	defer zipWriter.Close()
-
-	for _, file := range files {
-		fullPath, err := SafeJoin(rootDir, file)
-		if err != nil {
-			continue
-		}
-
-		err = addToZip(zipWriter, fullPath, filepath.Base(file))
-		if err != nil {
-			return fmt.Errorf("failed to add %s to zip: %w", file, err)
-		}
-	}
-
-	return nil
-}
-
-func addToZip(zipWriter *zip.Writer, sourcePath, pathInZip string) error {
-	info, err := os.Stat(sourcePath)
-	if err != nil {
-		return err
-	}
-
-	if info.IsDir() {
-		entries, err := os.ReadDir(sourcePath)
-		if err != nil {
-			return err
-		}
-
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), ".") {
-				continue
-			}
-
-			sourcePath := filepath.Join(sourcePath, entry.Name())
-			zipPath := filepath.Join(pathInZip, entry.Name())
-
-			err := addToZip(zipWriter, sourcePath, zipPath)
-			if err != nil {
-				return err
-			}
-		}
-	} else {
-		zipFile, err := zipWriter.Create(pathInZip)
-		if err != nil {
-			return err
-		}
-
-		sourceFile, err := os.Open(sourcePath)
-		if err != nil {
-			return err
-		}
-		defer sourceFile.Close()
-
-		_, err = io.Copy(zipFile, sourceFile)
-		return err
-	}
-
-	return nil
-}
-
-func ZipDirectory(writer io.Writer, rootDir, dirPath string) error {
-	fullPath, err := SafeJoin(rootDir, dirPath)
-	if err != nil {
-		return err
-	}
-
-	zipWriter := zip.NewWriter(writer)
-	defer zipWriter.Close()
-
-	return addToZip(zipWriter, fullPath, filepath.Base(dirPath))
-}
-
-// LoadLibraryIndex reads and parses library.yaml from the root directory.
-func LoadLibraryIndex(rootDir string) (models.LibraryIndex, error) {
-	indexPath := filepath.Join(rootDir, "library.yaml")
-	data, err := os.ReadFile(indexPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read library index: %w", err)
-	}
-
-	var index models.LibraryIndex
-	if err := yaml.Unmarshal(data, &index); err != nil {
-		return nil, fmt.Errorf("failed to parse library index: %w", err)
-	}
-
-	return index, nil
-}
-
-func CopyFile(src, dst string) error {
-	sourceFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer sourceFile.Close()
-	
-	destFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer destFile.Close()
-	
-	_, err = io.Copy(destFile, sourceFile)
-	return err
-}
+{{- if .Values.ingress.enabled }}
+{{- $hosts := list }}
+{{- if .Values.ingress.hosts }}
+  {{- $hosts = .Values.ingress.hosts }}
+{{- else if .Values.ingress.host }}
+  {{- if kindIs "slice" .Values.ingress.host }}
+    {{- $hosts = .Values.ingress.host }}
+  {{- else }}
+    {{- $hosts = list .Values.ingress.host }}
+  {{- end }}
+{{- else if .Values.dns.baseDomain }}
+  {{- $hosts = list (printf "lib-store-explorer.%s" .Values.dns.baseDomain) }}
+{{- end }}
+{{- $servicePort := .Values.service.port | default 8080 }}
+{{- $ingressPath := .Values.ingress.path | default "/" }}
+{{- $ingressPathType := .Values.ingress.pathType | default "Prefix" }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lib-store-explorer
+  namespace: {{ .Values.namespace }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className | default "nginx" }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+{{- range $hosts }}
+        - {{ . }}
+{{- end }}
+      secretName: {{ .Values.ingress.tls.secretName | default "tls-secret" }}
+  {{- end }}
+  rules:
+{{- range $hosts }}
+    - host: {{ . }}
+      http:
+        paths:
+          - path: {{ $ingressPath }}
+            pathType: {{ $ingressPathType }}
+            backend:
+              service:
+                name: lib-store-explorer-service
+                port:
+                  number: {{ $servicePort }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lib-store-explorer-direct
+  namespace: {{ .Values.namespace }}
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: {{ .Values.ingress.className | default "nginx" }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+{{- range $hosts }}
+        - {{ . }}
+{{- end }}
+      secretName: {{ .Values.ingress.tls.secretName | default "tls-secret" }}
+  {{- end }}
+  rules:
+{{- range $hosts }}
+    - host: {{ . }}
+      http:
+        paths:
+          - path: /(static|browse|download|v1|swagger|openapi)(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: lib-store-explorer-service
+                port:
+                  number: {{ $servicePort }}
+{{- end }}
+{{- end }}
